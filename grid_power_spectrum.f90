@@ -19,7 +19,7 @@
 !                  input_name_orig_minus_mean.grd (mean-subtracted input). 
 !                  Uses dextnsn < 0.0 to read input grid as extended grid (e.g., 
 !                  uncompressed boug_smallprp.grd). Added double precision for 
-!                  crop_dxorg_Nx, dxorg_Nx, dyorg_Ny, crop_deltaKx. Removed 
+!                  crop_dxorg_Nx, dxorg_Nx, dyorg_Nx, crop_deltaKx. Removed 
 !                  test_mode and statement 1000. Fixed deallocation error. 
 !                  Restored grid_contains_dummies logic. Restored symmetric 
 !                  padding logic (pad_x = (ncol_ext - ncol) / 2) to fix centering.
@@ -28,31 +28,31 @@
 !
 !===============================================================================
 
-      program grid_power_spectrum
+      integer ncol, nrow, istat, outlun, maxz, maxz_ext, maxpts,           &
+              il2, i, j, ncol_ext, nrow_ext, ilen, ipt,                    &
+              crop_ncol, crop_nrow, maxpts_cropped,                        &
+              pad_x_left, pad_x_right, pad_y_top, pad_y_bottom, maxx
 
-      implicit none
-      integer ncol, nrow, istat, outlun, maxz, maxz_ext, maxpts, &
-              il2, i, j, ncol_ext, nrow_ext, ilen, ipt, &
-              crop_ncol, crop_nrow, maxpts_cropped, &
-              pad_x_left, pad_x_right, pad_y_top, pad_y_bottom, ipt1, ipt2, maxx
-
-      character gridin*300, gridout*300, gridout_ext*300, &
+      character gridin*300, gridout*300, gridout_ext*300,                  &
                 gridout_pwr*300, gridout_pwr_shifted*300, gridout_pwr_norm*300, &
                 gridout_pwr_shifted_cropped*300, gridout_pwr_shifted_full*300, &
-                gridout_orig_minus_mean*300, radialout*300, &
-                tempfile*200, tempfilew*200, &
-                clabel*48, blankstring200*200, &
+                gridout_orig_minus_mean*300, radialout*300,                &
+                tempfile*200, tempfilew*200,                               &
+                clabel*48, blankstring200*200,                             &
                 gtype*3, grid_fill*300, answer*1
 
-      logical write_progress, show_it, grid_contains_dummies, &
+      logical write_progress, show_it, grid_contains_dummies,              &
               output_extended, crop_flag
 
       double precision d_dummy, drot, ddelx, ddely, dxorg, dyorg, dextnsn, &
                        dxorgnew, dyorgnew, deltaKx, deltaKy, crop_dxorg_Nx, &
-                       sum_edges, count_edges, mean_edges, &
+                       sum_edges, count_edges, mean_edges,                  &
                        dxorg_Nx, dyorg_Ny, crop_deltaKx
 
-      real, allocatable :: zwork1(:), zwork2(:), rwork1(:), rwork2(:), rwork3(:), &
+      real extnsn
+
+      real, allocatable :: zwork1(:), zwork2(:)
+      real, allocatable :: rwork1(:), rwork2(:), rwork3(:),          &
                            rworkcol1(:), rworkcol2(:), rworkcol3(:)
 
       real*8, allocatable :: dz(:)             ! Input grid
@@ -70,10 +70,10 @@
       real*8, allocatable :: radial_spec(:)    ! log10 power mean per ring
       real*8, allocatable :: k_spec(:)         ! cycles/m per ring center
       real*8, allocatable :: lambda_spec(:)    ! meters (= 1/k, cycles/m)
-      real*8 :: dr                            ! ring spacing (cycles/m)
-      integer :: nbins                        ! 0 => auto-pick; returns value
+      real*8              :: dr               ! ring spacing (cycles/m)
+      integer             :: nbins            ! 0 => auto-pick; returns value
 
-!-------------------------------------------------------------------------------
+!*******************************************************************************
 
       gtype = 'GRD'
       show_it = .true.
@@ -148,6 +148,7 @@
          print *,'Using extension: dextnsn = ', dextnsn
       endif
 
+      ! Add crop flag input
       print *
       print *,'Crop to right half (positive kx/ky) like Geosoft? (Y or N)'
       read (*,'(a)') answer
@@ -179,7 +180,7 @@
 
       deallocate ( dz, zwork1 )
 
-! Handle input grid based on dextnsn
+      ! Handle input grid based on dextnsn
       if ( dextnsn .lt. 0.0 ) then
          ! Use input grid as extended grid (e.g., boug_smallprp.grd)
          ncol_ext = ncol
@@ -298,17 +299,7 @@
          maxz_ext = ncol_ext * nrow_ext
          allocate ( dz_ext(maxz_ext), dwork2(maxz_ext), zwork2(maxz_ext) )
 
-! Allocate work arrays for extend_grid_ftprep
-         maxx = 288  ! Matches maxx in extend_grid_ftprep.f
-         allocate ( rwork1(maxz_ext), rwork2(maxz_ext), rwork3(maxz_ext) )
-         allocate ( rworkcol1(maxx), rworkcol2(maxx), rworkcol3(maxx) )
-
-! Copy input grid to rwork1
-         do i = 1, ncol * nrow
-            rwork1(i) = real(dz(i))
-         end do
-
-! Compute symmetric padding from extend_grid_geosoft.f90
+! Compute symmetric padding
          pad_x_left = (ncol_ext - ncol) / 2
          pad_x_right = ncol_ext - ncol - pad_x_left
          pad_y_top = (nrow_ext - nrow) / 2
@@ -320,58 +311,78 @@
 
          dxorgnew = dxorg - dble(pad_x_left) * ddelx
          dyorgnew = dyorg - dble(pad_y_top) * ddely
+!
+!===============================================================================
+!
+! EXTEND AND WRAP GRID TO PREPARE FOR FFTW
+!
+!===============================================================================
+!
+! Latest Bain cosine wrap:
+!
+!          call extend_wrap_grid ( dz, ncol, nrow, dextnsn, &
+!                                  dz_ext, ncol_ext, nrow_ext )
+!
+! Grok MEM wrap:
+!
+!         call extend_grid_geosoft ( dz, ncol, nrow, dextnsn, &
+!                                    dz_ext, ncol_ext, nrow_ext )
+!
+! Grok / UGSG FTPREP Prediction Filtering / MEM wrap - NOT FINISHED - DELETE LATER
+!
+!         call extend_grid_predfilt ( dz, ncol, nrow, dextnsn, &
+!                                     dz_ext, ncol_ext, nrow_ext )
+!
+! Grok / UGSG FTPREP Prediction Filtering / MEM wrap:
+!
+!         call extend_grid_ftprep ( dz, ncol, nrow, dextnsn, &
+!                                   dz_ext, ncol_ext, nrow_ext )
+!      if ( show_it ) then
+!         print *,'Just after extend_grid_ftprep'
+!         print *,extnsn,ncol,nrow,dxorg,dyorg,ddelx,ncol_ext,nrow_ext, &
+!                 dxorgnew,dyorgnew, maxx
+!      endif
+!
+!
+!===============================================================================
+!
+! Substitute original ftprep from USGS
+!
+     maxx = ncol_ext
+!
+     allocate ( rwork1(maxz_ext), rwork2(maxz_ext), rwork3(maxz_ext), &
+                rworkcol1(maxx), rworkcol2(maxx), rworkcol3(maxx) )
+!
+     extnsn = sngl ( dextnsn )
+!
+     do i = 1, ncol * nrow
+        rwork1(i) = sngl ( dz(i) )
+     end do
+!
+      call usgs_ftprep_new ( extnsn, ncol, nrow, dxorg, dyorg,         &
+                    ddelx, ddely,                                      &
+                    ncol_ext, nrow_ext, dxorgnew, dyorgnew,            &
+                    rwork1, rwork2,                                    &
+                    rwork3, rworkcol1, rworkcol2, rworkcol3, maxx,     &
+                    istat )
+      if ( istat .ne. 0 ) print *,'#### Error returned from ftprep: ', istat
+!
+      if ( show_it ) then
+         print *,'Just after ftprep'
+         print *,extnsn,ncol,nrow,dxorg,dyorg,ddelx,ncol_ext,nrow_ext, &
+                 dxorgnew,dyorgnew, maxx
+      endif
 
-! Call extend_grid_ftprep with original usgs_ftprep_new.f interface
-         if ( show_it ) print *,'Calling extend_grid_ftprep'
-         call extend_grid_ftprep ( dextnsn, ncol, nrow, dxorg, dyorg, ddelx, ddely, &
-                                   ncol_ext, nrow_ext, dxorgnew, dyorgnew, &
-                                   rwork1, rwork2, rwork3, rworkcol1, rworkcol2, &
-                                   rworkcol3, maxx, istat )
-         if ( istat /= 0 ) then
-            print *,'*Error in extend_grid_ftprep'
-            print *,'istat = ',istat
-            go to 900
-         endif
-         if ( show_it ) print *,'Completed extend_grid_ftprep'
-
-! Copy output to dz_ext
-         do i = 1, ncol_ext * nrow_ext
-            dz_ext(i) = dble(rwork3(i))
-         end do
-
-! Deallocate work arrays
-         deallocate ( rwork1, rwork2, rwork3, rworkcol1, rworkcol2, rworkcol3 )
-
-! Enforce periodicity on dz_ext
-         if ( show_it ) print *,'Enforcing periodicity on dz_ext'
-         do j = 1, nrow_ext
-            ipt1 = (j-1)*ncol_ext + 1
-            ipt2 = j*ncol_ext
-            if ( ipt1 <= 0 .or. ipt1 > maxz_ext .or. ipt2 <= 0 .or. ipt2 > maxz_ext ) then
-               print *,'*Error in periodicity enforcement: invalid indices'
-               print *,'j = ', j, 'ipt1 = ', ipt1, 'ipt2 = ', ipt2, 'maxz_ext = ', maxz_ext
-               istat = 5
-               go to 900
-            endif
-            dz_ext(ipt1) = 0.5d0 * (dz_ext(ipt1) + dz_ext(ipt2))
-            dz_ext(ipt2) = dz_ext(ipt1)
-         end do
-         do i = 1, ncol_ext
-            ipt1 = i
-            ipt2 = (nrow_ext-1)*ncol_ext + i
-            if ( ipt1 <= 0 .or. ipt1 > maxz_ext .or. ipt2 <= 0 .or. ipt2 > maxz_ext ) then
-               print *,'*Error in periodicity enforcement: invalid indices'
-               print *,'i = ', i, 'ipt1 = ', ipt1, 'ipt2 = ', ipt2, 'maxz_ext = ', maxz_ext
-               istat = 5
-               go to 900
-            endif
-            dz_ext(ipt1) = 0.5d0 * (dz_ext(ipt1) + dz_ext(ipt2))
-            dz_ext(ipt2) = dz_ext(ipt1)
-         end do
-         if ( show_it ) print *,'Periodicity enforced on dz_ext'
-
+! Extended array comes back as single precision rwork3
+!
+      do i = 1, maxz_ext
+         dz_ext(i) = dble ( rwork3(i) )
+      end do
+!
+!
+!-------------------------------------------------------------------------------
+!
          if ( output_extended ) then
-            if ( show_it ) print *,'Writing extended grid: ', trim(gridout_ext)
             gridout_ext = trim(gridout)//'_ext.grd'
             clabel(1:48) = gridout_ext(1:48)
             call write_geosoft_grid ( gridout_ext, ncol_ext, nrow_ext, &
@@ -384,8 +395,6 @@
                go to 900
             endif
             if ( show_it ) print *,'Wrote extended grid: ', trim(gridout_ext)
-         else
-            if ( show_it ) print *,'Skipped writing extended grid (output_extended = .false.)'
          endif
       endif
 
@@ -393,7 +402,6 @@
 ! COMPUTE SPECTRAL POWER GRID, CENTER THE GRID, COMPUTE RADIAL-AVERAGE/RADIAL-MEAN
 !===============================================================================
 
-      if ( show_it ) print *,'Allocating FFT arrays'
       nbins = min(ncol_ext, nrow_ext) / 2
       allocate(radial_spec(nbins), k_spec(nbins), lambda_spec(nbins))
 
@@ -409,20 +417,12 @@
          if ( show_it ) then
             print *,'Crop dimensions allocated: crop_ncol, crop_nrow = ', crop_ncol, crop_nrow
             print *,'Crop maxpts_cropped (full size) = ', maxpts_cropped
-            print *,'dz_pwr_shifted_cropped allocated: size = ', size(dz_pwr_shifted_cropped)
          endif
       endif
 
-      if ( show_it ) print *,'Copying dz_ext to u_ext'
       do j = 1, nrow_ext
          do i = 1, ncol_ext
-            ipt = (j-1)*ncol_ext + i
-            if ( ipt <= 0 .or. ipt > maxz_ext ) then
-               print *,'*Error copying dz_ext to u_ext: invalid index'
-               print *,'i = ', i, 'j = ', j, 'ipt = ', ipt, 'maxz_ext = ', maxz_ext
-               istat = 5
-               go to 900
-            endif
+            call rowcol_2_point ( ncol_ext, i, j, ipt )
             u_ext(i,j) = dz_ext(ipt)
          end do
       end do
@@ -431,77 +431,26 @@
          print *, 'min/max u_ext before FFT:', minval(u_ext), maxval(u_ext)
       endif
 
-      if ( show_it ) print *,'Calling compute_fft_power_spectrum'
-      call compute_fft_power_spectrum ( u_ext, pwr, ncol_ext, nrow_ext, ddelx, ddely, istat )
-      if ( istat .ne. 0 ) then
-         print *,'*Error in compute_fft_power_spectrum'
-         print *,'istat = ',istat
-         go to 900
-      endif
+      call compute_fft_power_spectrum ( u_ext, pwr, ncol_ext, nrow_ext, ddelx, ddely )
       if ( show_it ) then
          print *,'Just after computing power spectrum'
          print *, 'Max Power =', maxval(pwr)
          print *, 'Min Power =', minval(pwr, mask=pwr.ne.d_dummy)
       endif
 
-      if ( show_it ) print *,'Calling fftshift_and_radialnorm'
       call fftshift_and_radialnorm ( pwr, pwr_shifted, pwr_norm, &
                                      radial_spec, k_spec, lambda_spec, &
-                                     ncol_ext, nrow_ext, ddelx, ddely, dr, nbins, istat )
-      if ( istat .ne. 0 ) then
-         print *,'*Error in fftshift_and_radialnorm'
-         print *,'istat = ',istat
-         go to 900
-      endif
-      if ( show_it ) then
-         print *,'Just after shifting spectrum and radial norm'
-         print *,'pwr_shifted min/max = ', minval(pwr_shifted), maxval(pwr_shifted)
-         print *,'pwr_norm min/max = ', minval(pwr_norm), maxval(pwr_norm)
-      endif
+                                     ncol_ext, nrow_ext, ddelx, ddely, dr, nbins )
+      if ( show_it ) print *,'Just after shifting spectrum and radial norm'
 
-      if ( show_it ) print *,'Copying FFT results to output arrays'
-      if ( show_it ) then
-         print *,'Array sizes:'
-         print *,'dz_pwr: ', size(dz_pwr)
-         print *,'dz_pwr_shifted: ', size(dz_pwr_shifted)
-         print *,'dz_pwr_norm: ', size(dz_pwr_norm)
-         if ( crop_flag ) print *,'dz_pwr_shifted_cropped: ', size(dz_pwr_shifted_cropped)
-         print *,'pwr: ', size(pwr)
-         print *,'pwr_shifted: ', size(pwr_shifted)
-         print *,'pwr_norm: ', size(pwr_norm)
-      endif
       ipt = 0
       do j = 1, nrow_ext
          do i = 1, ncol_ext
             ipt = ipt + 1
-            if ( ipt <= 0 .or. ipt > maxz_ext ) then
-               print *,'*Error copying FFT results: invalid index'
-               print *,'i = ', i, 'j = ', j, 'ipt = ', ipt, 'maxz_ext = ', maxz_ext
-               istat = 5
-               go to 900
-            endif
-            if ( i > ncol_ext .or. j > nrow_ext ) then
-               print *,'*Error copying FFT results: invalid 2D index'
-               print *,'i = ', i, 'j = ', j, 'ncol_ext = ', ncol_ext, 'nrow_ext = ', nrow_ext
-               istat = 5
-               go to 900
-            endif
             dz_pwr(ipt) = pwr(i,j)
             dz_pwr_shifted(ipt) = pwr_shifted(i,j)
             dz_pwr_norm(ipt) = pwr_norm(i,j)
             if ( crop_flag ) then
-               if ( i <= 0 .or. i > ncol_ext .or. j <= 0 .or. j > nrow_ext ) then
-                  print *,'*Error copying dz_pwr_shifted_cropped: invalid index'
-                  print *,'i = ', i, 'j = ', j, 'ncol_ext = ', ncol_ext, 'nrow_ext = ', nrow_ext
-                  istat = 5
-                  go to 900
-               endif
-               if ( ipt <= 0 .or. ipt > maxpts_cropped ) then
-                  print *,'*Error copying dz_pwr_shifted_cropped: invalid ipt'
-                  print *,'ipt = ', ipt, 'maxpts_cropped = ', maxpts_cropped
-                  istat = 5
-                  go to 900
-               endif
                if ( i .ge. crop_ncol ) then
                   dz_pwr_shifted_cropped(ipt) = pwr_shifted(i,j)
                else
@@ -531,7 +480,6 @@
 
       maxpts = maxz_ext
 
-      if ( show_it ) print *,'Writing unshifted grid'
       gridout_pwr = trim(gridout)//'_pwr.grd'
       clabel(1:48) = gridout_pwr(1:48)
       deltaKx = 1.0d0 / ( dble(min(ncol_ext,nrow_ext)) * ddelx )
@@ -549,6 +497,7 @@
       endif
       if ( show_it ) print *,'Wrote unshifted grid: ', trim(gridout_pwr)
 
+      ! Write cropped grid (full size with left half null)
       if ( crop_flag ) then
          crop_dxorg_Nx = 0.0d0  ! Positive kx starts at 0
          crop_deltaKx = deltaKx
@@ -560,7 +509,6 @@
                     maxval(dz_pwr_shifted_cropped)
          endif
 
-         if ( show_it ) print *,'Writing cropped grid'
          gridout_pwr_shifted_cropped = trim(gridout)//'_pwr_shifted_crop.grd'
          clabel(1:48) = gridout_pwr_shifted_cropped(1:48)
          call write_geosoft_grid ( gridout_pwr_shifted_cropped, ncol_ext, nrow_ext, &
@@ -576,7 +524,7 @@
          if ( show_it ) print *,'Wrote cropped grid: ', trim(gridout_pwr_shifted_cropped)
       endif
 
-      if ( show_it ) print *,'Writing full shifted grid'
+      ! Write full shifted grid
       gridout_pwr_shifted_full = trim(gridout)//'_pwr_shifted_full.grd'
       clabel(1:48) = gridout_pwr_shifted_full(1:48)
       call write_geosoft_grid ( gridout_pwr_shifted_full, ncol_ext, nrow_ext, &
@@ -590,7 +538,7 @@
       endif
       if ( show_it ) print *,'Wrote full shifted grid: ', trim(gridout_pwr_shifted_full)
 
-      if ( show_it ) print *,'Writing normalized grid'
+      ! Write normalized grid
       gridout_pwr_norm = trim(gridout)//'_pwr_norm.grd'
       clabel(1:48) = gridout_pwr_norm(1:48)
       call write_geosoft_grid ( gridout_pwr_norm, ncol_ext, nrow_ext, &
@@ -608,7 +556,6 @@
 ! WRITE RADIAL SPECTRA OUTPUT FILES
 !===============================================================================
 
-      if ( show_it ) print *,'Writing radial spectra'
       radialout = trim(gridout)//'.dat'
       open ( file=radialout, unit=outlun )
       do i = 1, nbins
@@ -616,32 +563,16 @@
 710      format ( g20.6, 2f20.4 )
       end do
       close ( outlun )
-      if ( show_it ) print *,'Wrote radial spectra: ', trim(radialout)
 
 !===============================================================================
 
-      if ( show_it ) print *,'Deallocating arrays'
-      if ( dextnsn .ge. 0.0 ) then
-         if ( allocated(dz) ) deallocate ( dz )
-         if ( allocated(dwork1) ) deallocate ( dwork1 )
-         if ( allocated(zwork1) ) deallocate ( zwork1 )
-      endif
-      if ( allocated(dz_ext) ) deallocate ( dz_ext )
-      if ( allocated(dwork2) ) deallocate ( dwork2 )
-      if ( allocated(zwork2) ) deallocate ( zwork2 )
-      if ( allocated(u_ext) ) deallocate ( u_ext )
-      if ( allocated(pwr) ) deallocate ( pwr )
-      if ( allocated(pwr_shifted) ) deallocate ( pwr_shifted )
-      if ( allocated(pwr_norm) ) deallocate ( pwr_norm )
-      if ( allocated(dz_pwr) ) deallocate ( dz_pwr )
-      if ( allocated(dz_pwr_shifted) ) deallocate ( dz_pwr_shifted )
-      if ( allocated(dz_pwr_norm) ) deallocate ( dz_pwr_norm )
-      if ( allocated(radial_spec) ) deallocate ( radial_spec )
-      if ( allocated(k_spec) ) deallocate ( k_spec )
-      if ( allocated(lambda_spec) ) deallocate ( lambda_spec )
+      if ( dextnsn .ge. 0.0 ) deallocate ( dz, dwork1, zwork1 )
+      deallocate ( dz_ext, dwork2, zwork2 )
+      deallocate ( u_ext, pwr, pwr_shifted, pwr_norm )
+      deallocate ( dz_pwr, dz_pwr_shifted, dz_pwr_norm )
+      deallocate ( radial_spec, k_spec, lambda_spec )
 
       if ( grid_contains_dummies ) then
-         if ( show_it ) print *,'Deleting temporary grid file'
          call system('cmd /C del temp_grid_fill.grd')
       endif
 
@@ -649,4 +580,4 @@
       print *,'Program completed successfully!'
 
       stop
-      end
+end
